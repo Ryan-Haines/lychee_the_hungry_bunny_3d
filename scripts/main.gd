@@ -4,6 +4,12 @@ extends Node3D
 # Owns the title screen flow, the world, the meters, the poop QTE, the pee
 # system, the human, evidence tracking, rivals, scoring, and the day cycle.
 
+const Bunny = preload("res://scripts/bunny.gd")
+const PlayerBunny = preload("res://scripts/player.gd")
+const RivalBunny = preload("res://scripts/rival.gd")
+const HUD = preload("res://scripts/hud.gd")
+const GameAudio = preload("res://scripts/audio.gd")
+
 enum Urgency { NONE, POOP_URGENT, POOP_QTE, PEE_URGENT }
 
 const DAY_LENGTH := 300.0

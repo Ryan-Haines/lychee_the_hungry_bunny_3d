@@ -1,5 +1,5 @@
 class_name PlayerBunny
-extends Bunny
+extends "res://scripts/bunny.gd"
 
 # Set by main.gd: hops weaken when Lychee is starving.
 var power_scale := 1.0
