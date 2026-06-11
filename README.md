@@ -6,6 +6,12 @@ You are Lychee, a hungry house rabbit. Survive one full day: eat the hay, drink 
 land your poops in the litter box, manage your bladder, outmaneuver Potato and Gravy,
 shake the gate when the hay runs out, and look innocent when the human checks the pen.
 
+## Screenshots
+
+![Lychee the Hungry Bunny gameplay in fullscreen](screenshots/gameplay-fullscreen.png)
+
+![Lychee the Hungry Bunny title and settings screen](screenshots/gameplay-title-settings.png)
+
 ## How to launch the game on macOS
 
 There is no `.exe` in this repo — it's a **Godot project** (all code, zero binary assets),
