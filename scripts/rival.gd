@@ -1,5 +1,5 @@
 class_name RivalBunny
-extends Bunny
+extends "res://scripts/bunny.gd"
 
 # A rival bunny: wanders the pen and periodically raids the hay rack.
 # Personality knobs: hop_power (speed) and hay_chance (greed).

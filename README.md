@@ -6,12 +6,60 @@ You are Lychee, a hungry house rabbit. Survive one full day: eat the hay, drink 
 land your poops in the litter box, manage your bladder, outmaneuver Potato and Gravy,
 shake the gate when the hay runs out, and look innocent when the human checks the pen.
 
-## How to launch the game
+## How to launch the game on macOS
 
 There is no `.exe` in this repo — it's a **Godot project** (all code, zero binary assets),
 so you run it with the Godot engine itself.
 
-**1. Install Godot 4** (4.3 or newer, the standard build — not the .NET one):
+Run this command from the repo folder:
+
+```sh
+godot --path .
+```
+
+The game launches fullscreen by default on macOS. Use **Settings → Display** in the title
+screen or pause menu to switch between **Fullscreen**, **Borderless Window**, and
+**Windowed**.
+
+This requires **Godot 4.3 or newer**. The Homebrew install below adds the `godot`
+command automatically.
+
+**Install Godot 4**
+
+With Homebrew:
+
+```sh
+brew install --cask godot
+```
+
+Or download Godot for macOS from https://godotengine.org/download and move `Godot.app`
+to `/Applications`.
+
+If macOS blocks the downloaded app on first launch, open **System Settings → Privacy &
+Security** and allow Godot, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Godot.app
+```
+
+**Alternative run command**
+
+If `godot` is not on your `PATH`, launch the app directly from this repo folder:
+
+```sh
+/Applications/Godot.app/Contents/MacOS/Godot --path .
+```
+
+Alternatively, open the Godot Project Manager, click **Import**, choose this folder's
+`project.godot`, then press **F5** or click **Run Project** in the editor.
+
+**Making a standalone macOS app:** in the Godot editor go to **Project → Export...**,
+install the export templates when prompted, add a **macOS** preset, and click
+**Export Project**. That produces a macOS app bundle you can run outside the editor.
+
+### Windows notes
+
+Install Godot 4.3 or newer:
 
 ```powershell
 winget install --id GodotEngine.GodotEngine
@@ -25,7 +73,7 @@ winget installs it to a path like:
 
 (Or download it from https://godotengine.org/download — it's a single portable exe.)
 
-**2. Run the game** from the repo folder:
+Run the game from the repo folder:
 
 ```powershell
 & "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Microsoft.Winget.Source_8wekyb3d8bbwe\Godot_v4.6.3-stable_win64.exe" --path .
@@ -33,10 +81,7 @@ winget installs it to a path like:
 
 Or, if `godot` is on your PATH: `godot --path .`
 
-Alternatively, open the Godot Project Manager, click **Import**, and pick this folder's
-`project.godot` — then hit F5 (Run Project) in the editor.
-
-**Making a standalone .exe:** in the Godot editor go to *Project → Export...*, install the
+**Making a standalone .exe:** in the Godot editor go to **Project → Export...**, install the
 export templates when prompted, add a **Windows Desktop** preset, and click *Export Project*.
 That produces a shippable `LycheeTheHungryBunny.exe`.
 
