@@ -17,6 +17,10 @@ Run this command from the repo folder:
 godot --path .
 ```
 
+The game launches fullscreen by default on macOS. Use **Settings → Display** in the title
+screen or pause menu to switch between **Fullscreen**, **Borderless Window**, and
+**Windowed**.
+
 This requires **Godot 4.3 or newer**. The Homebrew install below adds the `godot`
 command automatically.
 

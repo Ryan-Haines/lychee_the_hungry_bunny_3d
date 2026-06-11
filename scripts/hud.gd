@@ -11,6 +11,8 @@ signal quit_to_menu
 const SETTINGS_PATH := "user://settings.cfg"
 const RESOLUTIONS = [Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160)]
 const RESOLUTION_LABELS = ["1920 x 1080  (1080p)", "2560 x 1440  (1440p)", "3840 x 2160  (4K)"]
+const DISPLAY_MODES = ["fullscreen", "borderless", "windowed"]
+const DISPLAY_MODE_LABELS = ["Fullscreen", "Borderless Window", "Windowed"]
 
 const HOWTO_TEXT := """YOU ARE LYCHEE. EAT. DRINK. POOP WITH DIGNITY.
 
@@ -80,6 +82,7 @@ var end_stats: Label
 var title_box: CenterContainer
 var howto_box: CenterContainer
 var settings_box: CenterContainer
+var display_mode_option: OptionButton
 var res_option: OptionButton
 var scale_slider: HSlider
 var scale_value_label: Label
@@ -90,6 +93,7 @@ var pending_prev_scale := -1.0   # scale to revert to; -1 = no pending change
 var confirm_timer := 0.0
 var msg_time := 0.0
 var susp_flash := 0.0
+var display_mode := "fullscreen"
 
 
 func _ready() -> void:
@@ -295,6 +299,12 @@ func _on_resolution_selected(idx: int) -> void:
 	_save_settings()
 
 
+func _on_display_mode_selected(idx: int) -> void:
+	display_mode = DISPLAY_MODES[idx]
+	_apply_display_mode()
+	_save_settings()
+
+
 func _apply_resolution(res: Vector2i) -> void:
 	var w := get_window()
 	if w.mode == Window.MODE_WINDOWED:
@@ -306,6 +316,31 @@ func _apply_resolution(res: Vector2i) -> void:
 	var idx := RESOLUTIONS.find(Vector2i(res))
 	if idx >= 0:
 		res_option.select(idx)
+	_apply_layout()
+
+
+func _apply_display_mode() -> void:
+	var w := get_window()
+	var mode_idx := DISPLAY_MODES.find(display_mode)
+	if mode_idx < 0:
+		mode_idx = 0
+	display_mode_option.select(mode_idx)
+
+	match display_mode:
+		"fullscreen":
+			w.borderless = false
+			w.mode = Window.MODE_FULLSCREEN
+		"borderless":
+			w.mode = Window.MODE_WINDOWED
+			w.borderless = true
+			var scr := w.current_screen
+			w.position = DisplayServer.screen_get_position(scr)
+			w.size = DisplayServer.screen_get_size(scr)
+		_:
+			w.mode = Window.MODE_WINDOWED
+			w.borderless = false
+			var res_idx := res_option.selected if res_option.selected >= 0 else 0
+			_apply_resolution(RESOLUTIONS[res_idx])
 	_apply_layout()
 
 
@@ -347,15 +382,18 @@ func _load_settings() -> void:
 	if cf.load(SETTINGS_PATH) == OK:
 		ui_scale = clampf(cf.get_value("display", "ui_scale", 1.0), 1.0, 3.0)
 		res = cf.get_value("display", "resolution", res)
+		display_mode = cf.get_value("display", "display_mode", display_mode)
 	scale_slider.set_value_no_signal(ui_scale)
 	scale_value_label.text = "%.2fx" % ui_scale
 	_apply_resolution(res)
+	_apply_display_mode()
 
 
 func _save_settings() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value("display", "ui_scale", ui_scale)
 	cf.set_value("display", "resolution", Vector2i(get_window().size))
+	cf.set_value("display", "display_mode", display_mode)
 	cf.save(SETTINGS_PATH)
 
 
@@ -623,6 +661,20 @@ func _build_settings() -> void:
 	var title := _label("SETTINGS", 28, Color(1.0, 0.85, 0.4))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
+
+	var mode_row := HBoxContainer.new()
+	mode_row.add_theme_constant_override("separation", 12)
+	vb.add_child(mode_row)
+	var mode_lab := _label("Display", 18)
+	mode_lab.custom_minimum_size = Vector2(130, 0)
+	mode_row.add_child(mode_lab)
+	display_mode_option = OptionButton.new()
+	for txt in DISPLAY_MODE_LABELS:
+		display_mode_option.add_item(txt)
+	display_mode_option.custom_minimum_size = Vector2(230, 0)
+	display_mode_option.focus_mode = Control.FOCUS_NONE
+	display_mode_option.item_selected.connect(_on_display_mode_selected)
+	mode_row.add_child(display_mode_option)
 
 	var res_row := HBoxContainer.new()
 	res_row.add_theme_constant_override("separation", 12)
