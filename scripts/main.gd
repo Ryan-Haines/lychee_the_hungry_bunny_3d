@@ -85,6 +85,8 @@ var messes: Array = []
 # game flow
 var started := false
 var game_over := false
+var bedtime := false      # end-of-day bed race: claim the bed to finish
+var bed_claim_t := 0.0
 var time_of_day := 0.0
 var current_phase := "Morning"
 var menu_cam_angle := 0.0
@@ -92,6 +94,19 @@ var menu_cam_angle := 0.0
 var gi_stasis := false
 var nudge_cd := 0.0
 var theft_msg_cd := 10.0
+
+# the chewable cardboard box
+const BOX_SIZE := Vector3(1.1, 0.9, 1.1)
+var chew_box: RigidBody3D
+var chew_box_shape: BoxShape3D
+var box_visual: Node3D
+var box_scale := 1.0
+var box_bits: Array = []
+var box_bits_torn := 0
+var box_chew_t := 0.0
+var box_msg_done := false
+var box_trap_msg_cd := 0.0
+var box_bit_mat: StandardMaterial3D
 
 # the hay economy
 var hay_supply := 100.0
@@ -121,6 +136,7 @@ var poop_mat: StandardMaterial3D
 var pee_mat: StandardMaterial3D
 
 var hay_pos := Vector3(-6, 0, -6)
+var box_pos := Vector3(-3.2, 0, 3.2)
 var water_pos := Vector3(6, 0, -6)
 var litter_pos := Vector3(6.5, 0, 6.5)
 var bed_pos := Vector3(0, 0, -7)
@@ -161,17 +177,22 @@ func _process(delta: float) -> void:
 		return
 
 	time_of_day += delta
-	if time_of_day >= DAY_LENGTH:
-		_end_day()
-		return
+	if not bedtime and time_of_day >= DAY_LENGTH:
+		_start_bedtime()
 
 	_handle_actions()
-	_update_meters(delta)
-	_update_interactions(delta)
-	_update_hay(delta)
-	_update_urgency(delta)
-	_update_human(delta)
-	_update_social(delta)
+	if bedtime:
+		_update_bedtime(delta)
+		if game_over:
+			return
+	else:
+		_update_meters(delta)
+		_update_interactions(delta)
+		_update_hay(delta)
+		_update_urgency(delta)
+		_update_human(delta)
+		_update_social(delta)
+	_update_box(delta)
 	_update_lighting(delta)
 	_update_camera(delta)
 	_update_audio()
@@ -209,15 +230,17 @@ func _handle_actions() -> void:
 		return
 	if Input.is_action_just_pressed("binky"):
 		if player.binky():
-			binkies += 1
-			score += 5.0
 			audio.sfx("binky", 0.6)
-			if binkies % 3 == 1:
-				hud.message("BINKY! JOY ACHIEVED.")
+			if not bedtime:
+				binkies += 1
+				score += 5.0
+				if binkies % 3 == 1:
+					hud.message("BINKY! JOY ACHIEVED.")
 	if Input.is_action_just_pressed("flop"):
 		var was_flopped := player.anim_state == "flop"
 		player.set_flop(not was_flopped)
-		if not was_flopped and player.anim_state == "flop" and bed_bonus_cd <= 0.0 and _on_bed(player.global_position):
+		if not bedtime and not was_flopped and player.anim_state == "flop" \
+				and bed_bonus_cd <= 0.0 and _on_bed(player.global_position):
 			score += 15.0
 			bed_bonus_cd = 20.0
 			audio.sfx("ding", 0.5)
@@ -262,18 +285,22 @@ func _update_interactions(delta: float) -> void:
 
 	var near_hay := player.global_position.distance_to(hay_pos) < 1.9
 	var near_water := player.global_position.distance_to(water_pos) < 1.6
+	var near_box := is_instance_valid(chew_box) \
+			and player.global_position.distance_to(chew_box.global_position) < 1.35
 	var near_gate := Vector2(player.global_position.x - gate_pos.x, player.global_position.z - gate_pos.z).length() < 1.7
 	var prompt := ""
 	if near_hay:
 		prompt = "Hold E to eat hay" if hay_supply > 0.0 else "Hay box EMPTY - shake the gate!"
 	elif near_water:
 		prompt = "Hold E to drink"
+	elif near_box:
+		prompt = "Hold E to chew the box (zero nutrition)"
 	elif near_gate:
 		prompt = "Press E to shake the gate (x%d)" % (3 - gate_shakes)
 	hud.set_prompt(prompt)
 
 	# Shaking the gate summons the human... if the hay is actually low.
-	if near_gate and not near_hay and not near_water and gate_call_cd <= 0.0 \
+	if near_gate and not near_hay and not near_water and not near_box and gate_call_cd <= 0.0 \
 			and Input.is_action_just_pressed("interact"):
 		gate_shakes += 1
 		gate_shake_t = 0.4
@@ -292,6 +319,7 @@ func _update_interactions(delta: float) -> void:
 				hud.message("THE HUMAN HEARD. HAY INCOMING.")
 
 	var eating := false
+	var chewing_box := false
 	if Input.is_action_pressed("interact") and player.is_on_floor():
 		if near_hay and hunger < 100.0 and hay_supply > 0.0:
 			eating = true
@@ -312,6 +340,16 @@ func _update_interactions(delta: float) -> void:
 			if sip_cd <= 0.0:
 				audio.sfx("drink", 0.6, 0.15)
 				sip_cd = 0.4
+		elif near_box:
+			# Chewing cardboard: zero nutrition, pure destruction.
+			eating = true
+			chewing_box = true
+			box_chew_t -= delta
+			if box_chew_t <= 0.0:
+				box_chew_t = 0.45
+				_tear_box_bit()
+	if not chewing_box:
+		box_chew_t = 0.3  # small wind-up before the first bite
 	if eating:
 		player.anim_state = "eat"
 	elif player.anim_state == "eat":
@@ -677,10 +715,77 @@ func _update_social(delta: float) -> void:
 				break
 
 
+# --- the cardboard box --------------------------------------------------------------
+
+func _update_box(delta: float) -> void:
+	box_trap_msg_cd = maxf(0.0, box_trap_msg_cd - delta)
+	if not is_instance_valid(chew_box):
+		return
+	# A rival under the box footprint is pinned: no hay for them. The box
+	# ignores rival collision, so Lychee can shove it right over one.
+	var bp := chew_box.global_position
+	for r in rivals:
+		var rival: RivalBunny = r
+		var was_trapped: bool = rival.trapped
+		var horiz := Vector2(bp.x - rival.global_position.x, bp.z - rival.global_position.z).length()
+		rival.trapped = horiz < 0.62 * box_scale and bp.y < 1.05
+		if rival.trapped and not was_trapped and box_trap_msg_cd <= 0.0:
+			box_trap_msg_cd = 3.0
+			audio.sfx("ding", 0.6)
+			if bedtime:
+				hud.message("%s IS UNDER THE BOX. ONE LESS BED RIVAL." % rival.bunny_name.to_upper())
+			else:
+				score += 25.0
+				hud.message("%s IS UNDER THE BOX. NO HAY FOR THEM. +25." % rival.bunny_name.to_upper())
+
+
+func _tear_box_bit() -> void:
+	box_bits_torn += 1
+	score += 1.0
+	audio.sfx("eat", 0.8, 0.3)
+	if not box_msg_done:
+		box_msg_done = true
+		hud.message("CARDBOARD. ZERO NUTRITION. INFINITE JOY.")
+
+	# A little scrap flutters to the floor near the box.
+	if box_bit_mat == null:
+		box_bit_mat = _mat(Color(0.64, 0.45, 0.26), 1.0)
+	var bit := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(randf_range(0.08, 0.16), 0.012, randf_range(0.08, 0.16))
+	bit.mesh = bm
+	bit.material_override = box_bit_mat
+	add_child(bit)
+	var ang := randf() * TAU
+	var dist := randf_range(0.55, 1.1)
+	bit.global_position = Vector3(
+		chew_box.global_position.x + sin(ang) * dist,
+		0.03 + (box_bits.size() % 5) * 0.004,
+		chew_box.global_position.z + cos(ang) * dist)
+	bit.rotation.y = randf() * TAU
+	box_bits.append(bit)
+	if box_bits.size() > 40:
+		var oldest: Node = box_bits.pop_front()
+		if is_instance_valid(oldest):
+			oldest.queue_free()
+
+	# Each bite rocks the box - chew enough and over it goes.
+	var away := chew_box.global_position - player.global_position
+	away.y = 0.0
+	away = away.normalized() if away.length() > 0.01 else Vector3(1, 0, 0)
+	chew_box.apply_impulse(away * 0.5 + Vector3(0, 0.35, 0), Vector3(0, BOX_SIZE.y * 0.5 * box_scale, 0))
+	chew_box.apply_torque_impulse(Vector3(randf_range(-0.8, 0.8), randf_range(-0.6, 0.6), randf_range(-0.8, 0.8)))
+
+	# The box slowly shrinks as it is devoured (but never quite disappears).
+	box_scale = maxf(0.55, box_scale - 0.015)
+	chew_box_shape.size = BOX_SIZE * box_scale
+	box_visual.scale = Vector3.ONE * box_scale
+
+
 # --- tunnel and bed ---------------------------------------------------------------
 
 func _on_tunnel_mouth(body: Node3D, side: String) -> void:
-	if body != player or not started or game_over:
+	if body != player or not started or game_over or bedtime:
 		return
 	if tunnel_last_mouth != "" and tunnel_last_mouth != side and (time_of_day - tunnel_last_time) < 4.0:
 		score += 15.0
@@ -717,7 +822,9 @@ func _update_camera(delta: float) -> void:
 func _update_audio() -> void:
 	# Music mood follows what is about to go wrong.
 	var m := "calm"
-	if urgency != Urgency.NONE:
+	if bedtime:
+		m = "zoomie"
+	elif urgency != Urgency.NONE:
 		m = "urgent"
 	elif human_checking:
 		m = "human"
@@ -741,7 +848,9 @@ func _update_hud() -> void:
 		Urgency.PEE_URGENT:
 			obj = "BLADDER CRITICAL. LITTER BOX. NOW."
 		_:
-			if human_checking:
+			if bedtime:
+				obj = "BEDTIME. BUMP THE RIVALS. FLOP ON THE BED."
+			elif human_checking:
 				obj = "HUMAN WATCHING. BECOME INNOCENT."
 			elif gi_stasis:
 				obj = "GI STASIS. MOVEMENT HALVED. EAT HAY NOW."
@@ -807,9 +916,88 @@ func _spawn_puddle(pos: Vector3) -> Node3D:
 	return puddle
 
 
-# --- day end -------------------------------------------------------------------
+# --- day end: the bed race -------------------------------------------------------
 
-func _end_day() -> void:
+func _start_bedtime() -> void:
+	bedtime = true
+	bed_claim_t = 0.0
+	# Bedtime forgives everything in flight: urgencies, the human, GI stasis.
+	urgency = Urgency.NONE
+	Engine.time_scale = 1.0
+	player.frozen = false
+	gi_stasis = false
+	player.power_scale = 1.0
+	human_checking = false
+	litter_ring.visible = false
+	hud.show_qte(false)
+	hud.set_urgent("")
+	hud.set_hold(-1.0)
+	hud.set_human("")
+	for r in rivals:
+		r.bedtime = true
+		r.mode = "idle"
+		if r.anim_state == "eat":
+			r.anim_state = "idle"
+	audio.sfx("alert", 0.7)
+	hud.message("SUNSET. ONE BED. THREE BUNNIES. CLAIM IT.")
+
+
+func _update_bedtime(delta: float) -> void:
+	# The bed race: everyone converges on the bed. Bump rivals away, they bump
+	# you back, and the day only ends once Lychee flops on the mattress.
+	# Nothing scores in here - the day's tally is already locked in.
+	nudge_cd -= delta
+	hud.set_prompt("BUMP THE RIVALS AWAY - FLOP (F) ON THE BED TO END THE DAY")
+
+	var p := player.flop_body.global_position if player.flop_body != null else player.global_position
+	if player.flop_body != null and _on_bed(p):
+		bed_claim_t += delta
+		if bed_claim_t >= 1.0:   # let the flop settle on the mattress
+			_finish_day()
+			return
+	else:
+		bed_claim_t = 0.0
+
+	for r in rivals:
+		var rival: RivalBunny = r
+		var dist := player.global_position.distance_to(rival.global_position)
+
+		# Bump a rival - they get launched away from the BED, not just from you.
+		if nudge_cd <= 0.0 and dist < 0.95 and not player.frozen and player.flop_body == null:
+			var away := rival.global_position - bed_pos
+			away.y = 0.0
+			if away.length() < 0.01:
+				away = rival.global_position - player.global_position
+				away.y = 0.0
+			if away.length() > 0.01:
+				away = away.normalized()
+				rival.velocity = Vector3(away.x * 4.5, 3.6, away.z * 4.5)
+				rival.heading = atan2(away.x, away.z)
+				rival.anim_state = "air"
+				nudge_cd = 1.2
+				audio.sfx("boop", 0.7)
+				hud.message("%s BUMPED AWAY FROM THE BED." % rival.bunny_name.to_upper())
+
+		# Rivals bump Lychee away whenever the bed is being contested.
+		if rival.shove_cd <= 0.0 and dist < 0.95 and not rival.trapped \
+				and rival.is_on_floor() and player.flop_body == null and not player.frozen \
+				and player.global_position.distance_to(bed_pos) < 3.2:
+			var push := player.global_position - bed_pos
+			push.y = 0.0
+			if push.length() < 0.01:
+				push = player.global_position - rival.global_position
+				push.y = 0.0
+			if push.length() > 0.01:
+				push = push.normalized()
+				player.velocity = Vector3(push.x * 4.2, 3.4, push.z * 4.2)
+				player.heading = atan2(push.x, push.z)
+				player.anim_state = "air"
+				rival.shove_cd = 3.0
+				audio.sfx("boop", 0.8)
+				hud.message("%s WANTS THE BED TOO. RUDE." % rival.bunny_name.to_upper())
+
+
+func _finish_day() -> void:
 	game_over = true
 	Engine.time_scale = 1.0
 	audio.sfx("fanfare", 0.8)
@@ -822,8 +1010,8 @@ func _end_day() -> void:
 	hud.set_hold(-1.0)
 	hud.show_qte(false)
 	hud.set_prompt("")
-	var stats := "Score: %d\nClean poops: %d  (perfect: %d)\nDignified pees: %d\nFloor poops: %d   Puddles: %d\nBinkies: %d\nHay devoured: %d" % [
-		int(score), clean_poops, qte_perfects, clean_pees, poop_messes, pee_messes, binkies, int(hay_eaten)
+	var stats := "Score: %d\nClean poops: %d  (perfect: %d)\nDignified pees: %d\nFloor poops: %d   Puddles: %d\nBinkies: %d\nHay devoured: %d\nCardboard shredded: %d bits" % [
+		int(score), clean_poops, qte_perfects, clean_pees, poop_messes, pee_messes, binkies, int(hay_eaten), box_bits_torn
 	]
 	hud.show_end(_pick_title(), stats)
 
@@ -837,6 +1025,8 @@ func _pick_title() -> String:
 		return "Puddle Bandit"
 	if poop_messes >= 3:
 		return "Carpet Criminal"
+	if box_bits_torn >= 25:
+		return "Cardboard Connoisseur"
 	if hay_eaten >= 150.0:
 		return "Hay Vacuum"
 	if binkies >= 6:
@@ -902,10 +1092,12 @@ func _build_environment() -> void:
 
 func _spawn_bunnies() -> void:
 	player = PlayerBunny.new()
+	player.lop_ears = true   # Lychee is a lop
 	player.setup(Color(0.96, 0.93, 0.88))
 	player.position = Vector3(0, 0.2, 3)
 	player.bounds = BOUNDS
 	player.make_sound = true
+	player.collision_mask = 1 | 2 | 4   # world + rivals + the chew box
 	add_child(player)
 
 	var potato := RivalBunny.new()
@@ -927,6 +1119,12 @@ func _spawn_bunnies() -> void:
 	add_child(gravy)
 
 	rivals = [potato, gravy]
+	for r in rivals:
+		# Rivals live on layer 2, which the chew box's mask skips - that's what
+		# lets the box be pushed right over a rival to pin it.
+		r.collision_layer = 2
+		r.collision_mask = 1 | 2
+		r.bed_spot = bed_pos
 
 
 func _mat(color: Color, rough := 0.9) -> StandardMaterial3D:
@@ -948,22 +1146,100 @@ func _mesh_box(size: Vector3, color: Color, pos: Vector3, parent: Node3D = null)
 	return mi
 
 
-func _static_box(size: Vector3, color: Color, pos: Vector3) -> StaticBody3D:
-	var body := StaticBody3D.new()
+func _round_rug(pos: Vector3, radius: float, color: Color) -> MeshInstance3D:
+	var rug := MeshInstance3D.new()
+	var m := CylinderMesh.new()
+	m.top_radius = radius
+	m.bottom_radius = radius
+	m.height = 0.02
+	rug.mesh = m
+	rug.material_override = _mat(color, 1.0)
+	rug.position = pos
+	add_child(rug)
+	return rug
+
+
+func _rect_rug(pos: Vector3, size: Vector2, yaw: float, color: Color) -> MeshInstance3D:
+	var rug := MeshInstance3D.new()
+	var m := BoxMesh.new()
+	m.size = Vector3(size.x, 0.02, size.y)
+	rug.mesh = m
+	rug.material_override = _mat(color, 1.0)
+	rug.position = pos
+	rug.rotation.y = yaw
+	add_child(rug)
+	return rug
+
+
+func _build_rugs() -> void:
+	# Patchwork floor: a pile of mismatched rugs in different shapes, sizes and
+	# colors, each at its own tiny height so the overlaps don't z-fight.
+	_round_rug(Vector3(0, 0.006, 0.5), 4.6, Color(0.78, 0.68, 0.52))                    # big jute base
+	_rect_rug(Vector3(2.5, 0.012, 2.1), Vector2(3.4, 2.4), 0.3, Color(0.72, 0.34, 0.30))  # dusty red
+	_rect_rug(Vector3(-4.8, 0.012, 1.4), Vector2(2.6, 1.8), -0.5, Color(0.45, 0.56, 0.38)) # olive
+	_round_rug(Vector3(4.4, 0.012, -3.4), 1.5, Color(0.36, 0.60, 0.58))                 # teal round
+	_round_rug(Vector3(-4.3, 0.018, -2.6), 0.95, Color(0.58, 0.45, 0.66))               # little purple
+	var oval := _round_rug(Vector3(0, 0.018, -4.4), 1.3, Color(0.92, 0.88, 0.78))       # cream oval by the ramp
+	oval.scale = Vector3(1.5, 1.0, 0.85)
+
+	# striped runner leading up to the gate
+	var runner := _rect_rug(Vector3(0, 0.012, 7.6), Vector2(1.6, 2.8), 0.0, Color(0.30, 0.36, 0.50))
+	for i in 3:
+		var stripe := MeshInstance3D.new()
+		var sm := BoxMesh.new()
+		sm.size = Vector3(1.4, 0.012, 0.3)
+		stripe.mesh = sm
+		stripe.material_override = _mat(Color(0.85, 0.78, 0.60) if i % 2 == 0 else Color(0.70, 0.40, 0.35), 1.0)
+		stripe.position = Vector3(0, 0.012, -0.8 + i * 0.8)
+		runner.add_child(stripe)
+
+	# little checkered patch rug
+	var checker := Node3D.new()
+	checker.position = Vector3(-2.4, 0.024, -1.4)
+	checker.rotation.y = 0.4
+	add_child(checker)
+	for ix in 3:
+		for iz in 2:
+			var sq := MeshInstance3D.new()
+			var qm := BoxMesh.new()
+			qm.size = Vector3(0.62, 0.012, 0.62)
+			sq.mesh = qm
+			sq.material_override = _mat(Color(0.82, 0.62, 0.30) if (ix + iz) % 2 == 0 else Color(0.40, 0.32, 0.45), 1.0)
+			sq.position = Vector3((ix - 1) * 0.64, 0, (iz - 0.5) * 0.64)
+			checker.add_child(sq)
+
+
+func _build_chew_box() -> void:
+	# The cardboard box is a real rigid body: chewing rocks it until it topples,
+	# and Lychee can shove it across the pen. It lives on its own collision
+	# layer that rivals ignore, so it can be pushed right over one to pin it.
+	chew_box = RigidBody3D.new()
+	chew_box.mass = 0.5
+	chew_box.linear_damp = 1.0
+	chew_box.angular_damp = 0.8
+	chew_box.collision_layer = 4
+	chew_box.collision_mask = 1
+	var pmat := PhysicsMaterial.new()
+	pmat.friction = 0.6
+	pmat.bounce = 0.05
+	chew_box.physics_material_override = pmat
 	var cs := CollisionShape3D.new()
-	var bs := BoxShape3D.new()
-	bs.size = size
-	cs.shape = bs
-	body.add_child(cs)
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
-	mi.material_override = _mat(color)
-	body.add_child(mi)
-	body.position = pos
-	add_child(body)
-	return body
+	chew_box_shape = BoxShape3D.new()
+	chew_box_shape.size = BOX_SIZE
+	cs.shape = chew_box_shape
+	chew_box.add_child(cs)
+
+	box_visual = Node3D.new()
+	chew_box.add_child(box_visual)
+	_mesh_box(BOX_SIZE, Color(0.71, 0.52, 0.31), Vector3.ZERO, box_visual)
+	_mesh_box(Vector3(0.3, BOX_SIZE.y + 0.02, BOX_SIZE.z + 0.02), Color(0.60, 0.43, 0.25), Vector3.ZERO, box_visual)  # tape
+	var flap_l := _mesh_box(Vector3(0.5, 0.04, 1.04), Color(0.66, 0.47, 0.27), Vector3(-0.45, 0.52, 0), box_visual)
+	flap_l.rotation.z = -0.55
+	var flap_r := _mesh_box(Vector3(0.5, 0.04, 1.04), Color(0.66, 0.47, 0.27), Vector3(0.45, 0.52, 0), box_visual)
+	flap_r.rotation.z = 0.55
+
+	chew_box.position = box_pos + Vector3(0, BOX_SIZE.y * 0.5 + 0.05, 0)
+	add_child(chew_box)
 
 
 func _build_pen() -> void:
@@ -984,15 +1260,7 @@ func _build_pen() -> void:
 	floor_mesh.material_override = _mat(Color(0.71, 0.58, 0.42), 1.0)
 	add_child(floor_mesh)
 
-	var rug := MeshInstance3D.new()
-	var rug_mesh := CylinderMesh.new()
-	rug_mesh.top_radius = 7.0
-	rug_mesh.bottom_radius = 7.0
-	rug_mesh.height = 0.02
-	rug.mesh = rug_mesh
-	rug.material_override = _mat(Color(0.78, 0.68, 0.52), 1.0)
-	rug.position = Vector3(0, 0.012, 0)
-	add_child(rug)
+	_build_rugs()
 
 	# pen fence (visible + collision, also keeps the ball in)
 	var fence_len := BOUNDS * 2.0 + 1.6
@@ -1164,9 +1432,8 @@ func _build_pen() -> void:
 		add_child(area)
 		area.body_entered.connect(_on_tunnel_mouth.bind(side))
 
-	# cardboard boxes (solid now)
-	_static_box(Vector3(1.1, 0.9, 1.1), Color(0.71, 0.52, 0.31), Vector3(-4.2, 0.45, 6.8))
-	_static_box(Vector3(0.8, 0.6, 0.8), Color(0.66, 0.47, 0.27), Vector3(-4.6, 1.2, 6.6))
+	# the chewable cardboard box (moved out of the tunnel corner, onto open floor)
+	_build_chew_box()
 
 	# the ball (pushable)
 	var ball := RigidBody3D.new()

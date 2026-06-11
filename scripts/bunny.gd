@@ -15,10 +15,19 @@ var anim_state := "idle"
 var heading := 0.0
 var spin := 0.0          # remaining binky spin (radians)
 var hop_cooldown := 0.0
+var binky_cd := 0.0      # binkies are joy, not a spam button
 var squash_t := 0.0      # landing squash timer
 var bounds := 9.2
 var frozen := false
 var t := 0.0             # animation clock
+
+# Lop ears hang down the sides of the head and swing on little springs,
+# so they flop around ragdoll-style with every hop. Set before setup().
+var lop_ears := false
+var ear_swing_l := 0.0
+var ear_swing_vel_l := 0.0
+var ear_swing_r := 0.0
+var ear_swing_vel_r := 0.0
 
 var body_pivot: Node3D
 var ear_l: Node3D
@@ -60,8 +69,9 @@ func try_hop(dir: Vector3, power := 1.0, height := 1.0) -> bool:
 
 
 func binky() -> bool:
-	if flop_body != null or not is_on_floor():
+	if flop_body != null or not is_on_floor() or binky_cd > 0.0:
 		return false
+	binky_cd = 2.5
 	velocity = Vector3(velocity.x * 0.3, 5.6, velocity.z * 0.3)
 	anim_state = "air"
 	spin = TAU * (1.0 if randf() < 0.5 else -1.0)
@@ -164,23 +174,29 @@ func _physics_process(delta: float) -> void:
 			anim_state = "idle"
 			hop_cooldown = GROUND_PAUSE
 			squash_t = 0.11
+			if lop_ears:
+				# Landing whips the hanging ears forward.
+				ear_swing_vel_l += 6.5
+				ear_swing_vel_r += 7.5
 			if make_sound and audio:
 				audio.sfx("land", 0.3, 0.2)
 		if absf(spin) > 0.01:
 			heading = rotation.y
 			spin = 0.0
 
-	# Shove the ball (or any rigid body) we hopped into.
+	# Shove the ball (or any rigid body) we hopped into. Impulse lands at the
+	# contact point, so tall things like the cardboard box can tip over.
 	for i in get_slide_collision_count():
 		var col := get_slide_collision(i)
 		var rb := col.get_collider() as RigidBody3D
 		if rb and rb != flop_body:
-			rb.apply_central_impulse(-col.get_normal() * 1.2)
+			rb.apply_impulse(-col.get_normal() * 1.2, col.get_position() - rb.global_position)
 			if audio and knock_cd <= 0.0:
 				audio.sfx("knock", 0.8)
 				knock_cd = 0.3
 
 	hop_cooldown = maxf(0.0, hop_cooldown - delta)
+	binky_cd = maxf(0.0, binky_cd - delta)
 	knock_cd = maxf(0.0, knock_cd - delta)
 	global_position.x = clampf(global_position.x, -bounds, bounds)
 	global_position.z = clampf(global_position.z, -bounds, bounds)
@@ -192,8 +208,11 @@ func _process(delta: float) -> void:
 
 	if flop_body != null:
 		# Ragdoll owns the pose; we just let the ears go limp.
-		ear_l.rotation.x = lerpf(ear_l.rotation.x, -0.9, minf(1.0, 4.0 * delta))
-		ear_r.rotation.x = lerpf(ear_r.rotation.x, -0.95, minf(1.0, 4.0 * delta))
+		if lop_ears:
+			_update_lop_ears(delta, flop_body.linear_velocity.y)
+		else:
+			ear_l.rotation.x = lerpf(ear_l.rotation.x, -0.9, minf(1.0, 4.0 * delta))
+			ear_r.rotation.x = lerpf(ear_r.rotation.x, -0.95, minf(1.0, 4.0 * delta))
 		return
 
 	if absf(spin) > 0.01:
@@ -230,18 +249,37 @@ func _process(delta: float) -> void:
 	body_pivot.rotation.z = lerpf(body_pivot.rotation.z, target_rz, minf(1.0, 7.0 * delta))
 	body_pivot.position.y = lerpf(body_pivot.position.y, target_py, minf(1.0, 7.0 * delta))
 
-	# Ears: pinned back in the air, flipped forward on landing, relaxed wiggle otherwise.
-	var on_floor := is_on_floor()
-	var ear_target := -0.15 + sin(t * 2.1) * 0.06
-	if not on_floor:
-		ear_target = -0.85
-	elif squash_t > 0.0:
-		ear_target = 0.3
-	ear_l.rotation.x = lerpf(ear_l.rotation.x, ear_target, minf(1.0, 11.0 * delta))
-	ear_r.rotation.x = lerpf(ear_r.rotation.x, ear_target + sin(t * 1.7) * 0.05, minf(1.0, 11.0 * delta))
+	if lop_ears:
+		_update_lop_ears(delta, velocity.y)
+	else:
+		# Upright ears: pinned back in the air, flipped forward on landing,
+		# relaxed wiggle otherwise.
+		var on_floor := is_on_floor()
+		var ear_target := -0.15 + sin(t * 2.1) * 0.06
+		if not on_floor:
+			ear_target = -0.85
+		elif squash_t > 0.0:
+			ear_target = 0.3
+		ear_l.rotation.x = lerpf(ear_l.rotation.x, ear_target, minf(1.0, 11.0 * delta))
+		ear_r.rotation.x = lerpf(ear_r.rotation.x, ear_target + sin(t * 1.7) * 0.05, minf(1.0, 11.0 * delta))
 
 	var twitch := 1.0 + maxf(0.0, sin(t * 13.0)) * 0.3 * (0.5 + 0.5 * sin(t * 0.9))
 	nose.scale = Vector3.ONE * twitch
+
+
+func _update_lop_ears(delta: float, vert_vel: float) -> void:
+	# Each hanging ear is an underdamped spring chasing a target swing angle:
+	# rising drags them back, falling floats them up, landings kick them
+	# forward (see the landing impulse in _physics_process). The result is a
+	# loose ragdoll-ish flop with every hop.
+	delta = minf(delta, 0.05)
+	var target := clampf(-vert_vel * 0.16, -0.65, 0.95)
+	var target_l := target + 0.15 + sin(t * 2.3) * 0.04
+	var target_r := target + 0.15 + sin(t * 2.3 + 1.4) * 0.04
+	ear_swing_vel_l += ((target_l - ear_l.rotation.x) * 70.0 - ear_swing_vel_l * 7.0) * delta
+	ear_swing_vel_r += ((target_r - ear_r.rotation.x) * 58.0 - ear_swing_vel_r * 6.0) * delta
+	ear_l.rotation.x = clampf(ear_l.rotation.x + ear_swing_vel_l * delta, -1.1, 1.3)
+	ear_r.rotation.x = clampf(ear_r.rotation.x + ear_swing_vel_r * delta, -1.1, 1.3)
 
 
 func _build_mesh(fur_color: Color) -> void:
@@ -288,7 +326,7 @@ func _make_ear(x: float, fur: Material, pink: Material) -> Node3D:
 	var outer := MeshInstance3D.new()
 	var om := CapsuleMesh.new()
 	om.radius = 0.07
-	om.height = 0.48
+	om.height = 0.52 if lop_ears else 0.48
 	outer.mesh = om
 	outer.material_override = fur
 	outer.position = Vector3(0, 0.2, 0)
@@ -301,8 +339,15 @@ func _make_ear(x: float, fur: Material, pink: Material) -> Node3D:
 	inner.material_override = pink
 	inner.position = Vector3(0, 0.2, 0.045)
 	ear.add_child(inner)
-	ear.position = Vector3(x, 0.88, 0.36)
-	ear.rotation.x = -0.15
-	ear.rotation.z = -0.12 if x > 0.0 else 0.12
+	if lop_ears:
+		# Lop ears: pivot at the top of the head, capsule hanging down past the
+		# cheeks. rotation.x is the swing axis the spring animates.
+		ear.position = Vector3(x * 1.7, 0.84, 0.36)
+		ear.rotation.z = 2.55 if x < 0.0 else -2.55
+		ear.rotation.x = 0.15
+	else:
+		ear.position = Vector3(x, 0.88, 0.36)
+		ear.rotation.x = -0.15
+		ear.rotation.z = -0.12 if x > 0.0 else 0.12
 	body_pivot.add_child(ear)
 	return ear
