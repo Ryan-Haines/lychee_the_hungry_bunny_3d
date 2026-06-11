@@ -59,7 +59,7 @@ class QTEBar extends Control:
 		queue_redraw()
 
 
-var ui_scale := 1.0
+var ui_scale := 2.0
 var in_game := false
 var root: Control
 var game_ui: Control
@@ -380,7 +380,7 @@ func _load_settings() -> void:
 	var res := Vector2i(1920, 1080)
 	var cf := ConfigFile.new()
 	if cf.load(SETTINGS_PATH) == OK:
-		ui_scale = clampf(cf.get_value("display", "ui_scale", 1.0), 1.0, 3.0)
+		ui_scale = clampf(cf.get_value("display", "ui_scale", 2.0), 1.0, 3.0)
 		res = cf.get_value("display", "resolution", res)
 		display_mode = cf.get_value("display", "display_mode", display_mode)
 	scale_slider.set_value_no_signal(ui_scale)
@@ -700,13 +700,13 @@ func _build_settings() -> void:
 	scale_slider.min_value = 1.0
 	scale_slider.max_value = 3.0
 	scale_slider.step = 0.25
-	scale_slider.value = 1.0
+	scale_slider.value = 2.0
 	scale_slider.custom_minimum_size = Vector2(180, 0)
 	scale_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	scale_slider.focus_mode = Control.FOCUS_NONE
 	scale_slider.value_changed.connect(_on_ui_scale_changed)
 	scale_row.add_child(scale_slider)
-	scale_value_label = _label("1.00x", 18)
+	scale_value_label = _label("2.00x", 18)
 	scale_value_label.custom_minimum_size = Vector2(56, 0)
 	scale_row.add_child(scale_value_label)
 	var apply := _button("Apply")
